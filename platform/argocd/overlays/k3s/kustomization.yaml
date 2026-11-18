@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: argocd
 resources:
   - namespace.yaml
+  - in-cluster-secret.yaml
   - https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.1/manifests/install.yaml
 patches:
   - path: controller-clusterrole-patch.yaml

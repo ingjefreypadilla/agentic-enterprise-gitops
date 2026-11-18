@@ -26,35 +26,44 @@ every project must map its destination to a ServiceAccount or synchronization
 fails rather than falling back to the controller identity.
 
 The K3s overlay replaces the upstream controller's unrestricted ClusterRole
-with read-only access to Deployments, ReplicaSets, Pods, and Services plus
-permission to create SelfSubjectAccessReviews. It removes the upstream server
-ClusterRole and ClusterRoleBinding. It also removes the unnecessary
-cluster-wide ApplicationSet binding; the namespaced ApplicationSet Role remains
-available. UI operations use the existing exact ServiceAccount impersonation
-grant instead. `resource.respectRBAC` is strict.
+with only the permission to create SelfSubjectAccessReviews, which is required
+by strict RBAC discovery. A non-credential cluster Secret restricts the
+in-cluster cache to `agentic-lab`; Argo CD continues to use its projected
+ServiceAccount token. Read-only Deployment, ReplicaSet, Pod, and Service cache
+access is granted by a Role in that namespace. The upstream server and
+ApplicationSet ClusterRoles and bindings are removed; their namespaced Roles
+remain available. UI operations use exact ServiceAccount impersonation.
+`resource.respectRBAC` is strict.
 
 The overlay sets baseline requests of 25m CPU and 64Mi memory for small
 components. The application controller requests 100m/256Mi, the repository
 server 100m/256Mi, and the API server 50m/128Mi. Combined requests are about
 350m CPU and 896Mi memory, which fits the confirmed four-core, eight-GiB lab.
 
-Validate locally before installation:
+Render locally, then run a non-mutating server-side preflight from the
+administrator context:
 
 ```bash
 kubectl kustomize platform/argocd/overlays/k3s >/tmp/argocd-install.yaml
 kubectl kustomize platform >/tmp/platform.yaml
 kubectl kustomize clusters/k3s/argocd >/tmp/agent-runtime-argocd.yaml
+kubectl apply --server-side --force-conflicts --dry-run=server \
+  -k platform/argocd/overlays/k3s
 ```
 
 An administrator installs the control plane and security prerequisites in this
 order:
 
 ```bash
-kubectl apply --server-side -k platform/argocd/overlays/k3s
+kubectl apply --server-side --force-conflicts -k platform/argocd/overlays/k3s
+kubectl wait --for=condition=Established --timeout=90s \
+  crd/applications.argoproj.io \
+  crd/applicationsets.argoproj.io \
+  crd/appprojects.argoproj.io
+kubectl apply -k platform/
 kubectl rollout status statefulset/argocd-application-controller -n argocd
 kubectl rollout status deployment/argocd-server -n argocd
 kubectl rollout status deployment/argocd-repo-server -n argocd
-kubectl apply -k platform/
 ```
 
 After materializing the read-only repository credential outside Git, register
@@ -67,24 +76,52 @@ kubectl apply -k clusters/k3s/argocd/
 Verify the effective permissions before the first sync:
 
 ```bash
+# expected: yes
+kubectl auth can-i list pods -n agentic-lab \
+  --as=system:serviceaccount:argocd:argocd-application-controller
+# expected: no
+kubectl auth can-i list pods -n default \
+  --as=system:serviceaccount:argocd:argocd-application-controller
+# expected: no
 kubectl auth can-i list pods --all-namespaces \
   --as=system:serviceaccount:argocd:argocd-application-controller
-kubectl auth can-i patch deployments --all-namespaces \
+# expected: yes
+kubectl auth can-i create selfsubjectaccessreviews.authorization.k8s.io \
   --as=system:serviceaccount:argocd:argocd-application-controller
+# expected: yes (built-in authenticated API discovery)
+kubectl auth can-i get --non-resource-url=/apis \
+  --as=system:serviceaccount:argocd:argocd-application-controller
+# expected: yes (built-in public version discovery)
+kubectl auth can-i get --non-resource-url=/version \
+  --as=system:serviceaccount:argocd:argocd-application-controller
+# expected: no
 kubectl auth can-i list pods --all-namespaces \
   --as=system:serviceaccount:argocd:argocd-server
+# expected: yes
 kubectl auth can-i impersonate users \
   --resource-name=system:serviceaccount:agentic-lab:argocd-agent-runtime-sync \
   --as=system:serviceaccount:argocd:argocd-server
+# expected: yes
 kubectl auth can-i patch deployments -n agentic-lab \
   --as=system:serviceaccount:agentic-lab:argocd-agent-runtime-sync
+# expected: no
 kubectl auth can-i delete deployments -n agentic-lab \
   --as=system:serviceaccount:agentic-lab:argocd-agent-runtime-sync
+# expected: yes
 kubectl auth can-i get pods/log -n agentic-lab \
   --as=system:serviceaccount:agentic-lab:argocd-agent-runtime-sync
 ```
 
-Expected results are `yes`, `no`, `no`, `yes`, `yes`, `no`, and `yes`.
+Confirm the cache scope separately; this must print only `agentic-lab`:
+
+```bash
+kubectl get secret argocd-in-cluster -n argocd \
+  -o jsonpath='{.data.namespaces}' | base64 --decode
+```
+
+The discovery results come from Kubernetes' built-in bindings and expose API
+metadata, not workload objects. The SelfSubjectAccessReview and exact-user
+impersonation grants are the only custom cluster-scoped runtime permissions.
 Kubernetes v1.37.2+k3s1 is within the Argo CD 3.6 tested range.
 
 The Agent Runtime application uses manual synchronization. Automated sync is
