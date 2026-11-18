@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: agent-runtime
+  namespace: argocd
+spec:
+  description: Restricted project for the Agent Runtime on K3s
+  sourceRepos:
+    - git@github.com:ingjefreypadilla/agentic-enterprise-gitops.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: agentic-lab
+  destinationServiceAccounts:
+    - server: https://kubernetes.default.svc
+      namespace: agentic-lab
+      defaultServiceAccount: argocd-agent-runtime-sync
+  clusterResourceBlacklist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: ReplicaSet
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: Pod

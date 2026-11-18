@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agent-runtime
+  namespace: argocd
+spec:
+  project: agent-runtime
+  source:
+    repoURL: git@github.com:ingjefreypadilla/agentic-enterprise-gitops.git
+    targetRevision: main
+    path: apps/agent-runtime/overlays/k3s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentic-lab
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false
